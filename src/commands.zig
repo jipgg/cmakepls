@@ -10,6 +10,7 @@ const string = []u8;
 const cstring = []const u8;
 const zstring = [:0]u8;
 const czstring = [:0]const u8;
+const stdout = std.io.getStdOut;
 
 const format = std.fmt.format;
 pub fn init(allocator: Allocator, v: Argv) !void {
@@ -33,6 +34,9 @@ pub fn init(allocator: Allocator, v: Argv) !void {
     const cmakepresets = try dir.createFile("CMakePresets.json", .{});
     out = cmakepresets.writer();
     cmakepresets.close();
+}
+pub fn version() !void {
+    try stdout().writer().print("version: {d}.{d}.{d}", .{ common.VERSION_MAJOR, common.VERSION_MINOR, common.VERSION_PATCH });
 }
 pub fn global(a: Allocator, v: Argv) !void {
     const parsed_config = common.read_config(a) catch try common.present_default_config(a);
@@ -68,6 +72,76 @@ pub fn template(a: Allocator, v: Argv) !void {
     var files_it = std.mem.split(u8, files_arg, ",");
     while (files_it.next()) |file| try cwd.copyFile(file, dir, file, .{});
 }
+pub fn generate(a: Allocator, v: Argv) !void {
+    const parsed = try common.get_config(a);
+    defer parsed.deinit();
+    const conf = parsed.value;
+    var cmd = std.ArrayList([]const u8).init(a);
+    defer cmd.deinit();
+    try cmd.append("cmake");
+    if (v.keyword("--toolchain") or !mem.eql(u8, conf.toolchain, "null")) {
+        try cmd.append("--toolchain");
+        try cmd.append(v.param("--toolchain") orelse conf.toolchain);
+    }
+    try cmd.append("-B");
+    try cmd.append(conf.defaults.build_dir);
+    const bin_spec = "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=";
+    const bin_dir = try mem.concat(a, u8, &[_][]const u8{ bin_spec, conf.defaults.bin_dir });
+    defer a.free(bin_dir);
+    try cmd.append(bin_dir);
+    const lib_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=", conf.defaults.lib_dir });
+    defer a.free(lib_dir);
+    try cmd.append(lib_dir);
+    const dll_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=", conf.defaults.lib_dir });
+    defer a.free(dll_dir);
+    try cmd.append(dll_dir);
+    const rslt = try process.Child.run(.{ .allocator = a, .argv = cmd.items });
+    defer {
+        a.free(rslt.stdout);
+        a.free(rslt.stderr);
+    }
+    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
+    if (rslt.stderr.len > 0) {
+        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
+    }
+}
+pub fn build(a: Allocator, _: Argv) !void {
+    const parsed = try common.get_config(a);
+    defer parsed.deinit();
+    const conf = parsed.value;
+    const rslt = try process.Child.run(.{
+        .allocator = a,
+        .argv = &[_][]const u8{ "cmake", "--build", conf.defaults.build_dir },
+    });
+    defer {
+        a.free(rslt.stderr);
+        a.free(rslt.stdout);
+    }
+    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
+    if (rslt.stderr.len > 0) {
+        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
+    }
+}
+pub fn run(a: Allocator) !void {
+    const parsed = try common.get_config(a);
+    defer parsed.deinit();
+    const conf = parsed.value;
+    const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.defaults.build_dir, "/", conf.defaults.bin_dir, "/", conf.defaults.project });
+    defer a.free(cmd);
+    const rslt = try process.Child.run(.{
+        .allocator = a,
+        .argv = &[_][]const u8{cmd},
+    });
+    defer {
+        a.free(rslt.stderr);
+        a.free(rslt.stdout);
+    }
+    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
+    if (rslt.stderr.len > 0) {
+        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
+    }
+}
+
 pub fn project(a: Allocator, v: Argv) !void {
     if (v.param("--template") orelse v.param("-t")) |t| {
         const config = try common.get_config(a);

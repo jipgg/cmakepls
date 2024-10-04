@@ -4,6 +4,9 @@ const Dir = std.fs.Dir;
 pub const DEFAULT_ALLOCATOR = std.heap.page_allocator;
 pub const APP_NAME: []const u8 = "cmakepls";
 pub const CONFIG_FILE_NAME = "config.json";
+pub const VERSION_MAJOR = 0;
+pub const VERSION_MINOR = 0;
+pub const VERSION_PATCH = 1;
 pub const TEMPLATE_DIR_NAME = "templates";
 pub const MAX_BYTES: usize = 1024 * 4;
 pub const ParsedConfig = std.json.Parsed(ConfigFile);
@@ -18,6 +21,8 @@ pub const ConfigFile = struct {
         project: cstring,
         build_dir: cstring,
         source_dir: cstring,
+        bin_dir: cstring,
+        lib_dir: cstring,
     },
 };
 pub const DEFAULT_CONFIG = ConfigFile{
@@ -25,11 +30,13 @@ pub const DEFAULT_CONFIG = ConfigFile{
     .defaults = .{
         .project = "proj",
         .cmake_minimum_required = "3.22.2",
-        .build_dir = "build",
+        .build_dir = "cmake-out",
         .cxx_standard = "17",
         .cxx_standard_required = "ON",
         .export_compile_commands = "ON",
         .source_dir = "src",
+        .bin_dir = "bin",
+        .lib_dir = "lib",
     },
 };
 pub const Argv = struct {
