@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const Argv = common.Argv;
 const Dir = std.fs.Dir;
 const File = std.fs.File;
+const ConfigFile = common.ConfigFile;
 const process = std.process;
 const mem = std.mem;
 const string = []u8;
@@ -15,29 +16,29 @@ const KW_VERBOSE = common.KW_VERBOSE;
 const KW_FORCED = common.KW_FORCED;
 const CACHE_DIR = common.CACHE_DIR;
 
-const format = std.fmt.format;
-pub fn init(allocator: Allocator, v: Argv) !void {
-    const parsed_conf = try common.get_config(allocator);
-    defer parsed_conf.deinit();
-    const conf = parsed_conf.value;
-    const def = conf.defaults;
-    var dir = std.fs.cwd();
-    defer dir.close();
-    const cmakelists = try dir.createFile("CMakeLists.txt", .{});
-    var out = cmakelists.writer();
-    const min_req_fmt = "cmake_minimum_required(VERSION {s})\n";
-    try format(out, min_req_fmt, .{v.param("--version") orelse def.cmake_minimum_required});
-    try format(out, "set(CMAKE_CXX_STANDARD {s})\n", .{v.param("--std") orelse def.cxx_standard});
-    try format(out, "set(CMAKE_CXX_STANDARD_REQUIRED {s})\n", .{v.param("--std_required") orelse def.cxx_standard_required});
-    const project_name = v.param("--name") orelse def.project;
-    try format(out, "project({s})\n", .{project_name});
-    try format(out, "file(GLOB SOURCE_DIR ${{CMAKE_SOURCE_DIR}}/{s}/*.cpp)\n", .{v.param("--source") orelse def.source_dir});
-    try format(out, "add_executable({s} {s}${{SOURCE_DIR}})\n", .{ project_name, if (v.keyword("-WIN32")) "WIN32 " else "" });
-    cmakelists.close();
-    const cmakepresets = try dir.createFile("CMakePresets.json", .{});
-    out = cmakepresets.writer();
-    cmakepresets.close();
-}
+// const format = std.fmt.format;
+// pub fn init(allocator: Allocator, v: Argv) !void {
+//     const parsed_conf = try common.get_config(allocator);
+//     defer parsed_conf.deinit();
+//     const conf = parsed_conf.value;
+//     const def = conf.defaults;
+//     var dir = std.fs.cwd();
+//     defer dir.close();
+//     const cmakelists = try dir.createFile("CMakeLists.txt", .{});
+//     var out = cmakelists.writer();
+//     const min_req_fmt = "cmake_minimum_required(VERSION {s})\n";
+//     try format(out, min_req_fmt, .{v.param("--version") orelse def.cmake_minimum_required});
+//     try format(out, "set(CMAKE_CXX_STANDARD {s})\n", .{v.param("--std") orelse def.cxx_standard});
+//     try format(out, "set(CMAKE_CXX_STANDARD_REQUIRED {s})\n", .{v.param("--std_required") orelse def.cxx_standard_required});
+//     const project_name = v.param("--name") orelse def.project;
+//     try format(out, "project({s})\n", .{project_name});
+//     try format(out, "file(GLOB SOURCE_DIR ${{CMAKE_SOURCE_DIR}}/{s}/*.cpp)\n", .{v.param("--source") orelse def.source_dir});
+//     try format(out, "add_executable({s} {s}${{SOURCE_DIR}})\n", .{ project_name, if (v.keyword("-WIN32")) "WIN32 " else "" });
+//     cmakelists.close();
+//     const cmakepresets = try dir.createFile("CMakePresets.json", .{});
+//     out = cmakepresets.writer();
+//     cmakepresets.close();
+// }
 pub fn version() !void {
     try stdout().writer().print("version: {d}.{d}.{d}", .{ common.VERSION_MAJOR, common.VERSION_MINOR, common.VERSION_PATCH });
 }
@@ -73,7 +74,14 @@ pub fn template(a: Allocator, v: Argv) !void {
     var dir = try templates_dir.openDir(name_arg, .{});
     defer dir.close();
     var files_it = std.mem.split(u8, files_arg, ",");
-    while (files_it.next()) |file| try cwd.copyFile(file, dir, file, .{});
+    while (files_it.next()) |entry| {
+        if (entry[entry.len - 1] == '/') {
+            try dir.makeDir(entry);
+            try common.copy_dir_recursively(try cwd.openDir(entry, .{ .iterate = true }), try dir.openDir(entry, .{ .iterate = true }));
+            continue;
+        }
+        try cwd.copyFile(entry, dir, entry, .{});
+    }
     var out_buffer: [100]u8 = undefined;
     try stdout().writer().print("template written to {s}", .{try dir.realpath("", &out_buffer)});
 }
@@ -129,39 +137,56 @@ pub fn project(a: Allocator, v: Argv) !void {
         const conf = config.value;
         var dir = try common.get_template_dir(a, t);
         defer dir.close();
-        var it = dir.iterate();
         var cwd = std.fs.cwd();
         defer cwd.close();
         var buf = std.ArrayList(u8).init(a);
         defer buf.deinit();
-        while (try it.next()) |entry| {
-            if (entry.kind != .file) continue;
-            try dir.copyFile(entry.name, cwd, entry.name, .{});
-            try buf.resize(common.MAX_BYTES);
-            var file = try cwd.openFile(entry.name, .{ .mode = .read_write });
-            try buf.resize(try file.readAll(buf.items));
-            file.close();
-            //try cwd.deleteFile(entry.name);
-            file = try cwd.createFile(entry.name, .{});
-            defer file.close();
-            const file_writer = file.writer();
-            var lines = mem.split(u8, buf.items, "\n");
-            while (lines.next()) |line| {
-                var line_it = mem.split(u8, line, "@");
-                while (line_it.next()) |str| {
-                    if (mem.count(u8, str, "!") > 0) {
-                        try process_line_substr(file_writer, str, conf);
-                        continue;
-                    }
-                    try file_writer.print("{s}", .{str});
-                }
-                try file_writer.print("\n", .{});
-            }
-        }
+        try process_entries(dir, cwd, &buf, conf);
     }
 }
 //helpers
-inline fn process_line_substr(writer: anytype, str: []const u8, conf: common.ConfigFile) !void {
+fn process_entries(src: Dir, dest: Dir, buf: *std.ArrayList(u8), conf: ConfigFile) !void {
+    var it = src.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file) {
+            try process_file(src, entry, dest, buf, conf);
+            continue;
+        }
+        if (entry.kind == .directory) {
+            try dest.makeDir(entry.name);
+            var dest_subdir = try dest.openDir(entry.name, .{ .iterate = true });
+            defer dest_subdir.close();
+            var src_subdir = try src.openDir(entry.name, .{ .iterate = true });
+            defer src_subdir.close();
+            try process_entries(src_subdir, dest_subdir, buf, conf);
+            continue;
+        }
+    }
+}
+inline fn process_file(dir: Dir, entry: Dir.Entry, cwd: Dir, buf: *std.ArrayList(u8), conf: ConfigFile) !void {
+    try dir.copyFile(entry.name, cwd, entry.name, .{});
+    try buf.resize(common.MAX_BYTES);
+    var file = try cwd.openFile(entry.name, .{ .mode = .read_write });
+    try buf.resize(try file.readAll(buf.items));
+    file.close();
+    //try cwd.deleteFile(entry.name);
+    file = try cwd.createFile(entry.name, .{});
+    defer file.close();
+    const file_writer = file.writer();
+    var lines = mem.split(u8, buf.items, "\n");
+    while (lines.next()) |line| {
+        var line_it = mem.split(u8, line, "@");
+        while (line_it.next()) |str| {
+            if (mem.count(u8, str, "!") > 0) {
+                try process_line_substr(file_writer, str, conf);
+                continue;
+            }
+            try file_writer.print("{s}", .{str});
+        }
+        try file_writer.print("\n", .{});
+    }
+}
+inline fn process_line_substr(writer: anytype, str: []const u8, conf: ConfigFile) !void {
     const def = conf.defaults;
     if (mem.eql(u8, str, "!cmake_minimum_required")) {
         try writer.print("{s}", .{def.cmake_minimum_required});

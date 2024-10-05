@@ -157,3 +157,33 @@ pub fn delete_dir_contents(dir: Dir) !void {
         try dir.deleteTree(v.name);
     }
 }
+pub fn copy_dir_recursively(src_dir: Dir, dest_dir: Dir) !void {
+    var it = src_dir.iterate();
+    while (try it.next()) |entry| {
+        switch (entry.kind) {
+            .file => {
+                try src_dir.copyFile(entry.name, dest_dir, entry.name, .{});
+                continue;
+            },
+            .directory => {
+                var child_src_dir = try src_dir.openDir(entry.name, .{ .iterate = true });
+                defer child_src_dir.close();
+                try dest_dir.makeDir(entry.name);
+                var child_dest_dir = try dest_dir.openDir(entry.name, .{ .iterate = true });
+                defer child_dest_dir.close();
+                try copy_dir_recursively(child_src_dir, child_dest_dir);
+                continue;
+            },
+            .door => {},
+            .unknown => {},
+            .sym_link => {},
+            .whiteout => {},
+            .named_pipe => {},
+            .event_port => {},
+            .block_device => {},
+            .character_device => {},
+            .unix_domain_socket => {},
+        }
+        std.debug.print("Unhandled entry {any}", .{entry});
+    }
+}

@@ -9,6 +9,6 @@ Written in zig as a personal challenge and goal while learning the language.
 * medium priority
     * streamline command convention
     * store templates as a compressed file
-    * allow templates to have subdirectories
+    - [x] allow templates to have subdirectories
 * low
     * help command for argument options
