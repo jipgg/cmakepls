@@ -11,6 +11,8 @@ const cstring = []const u8;
 const zstring = [:0]u8;
 const czstring = [:0]const u8;
 const stdout = std.io.getStdOut;
+const KW_VERBOSE = common.KW_VERBOSE;
+const KW_FORCED = common.KW_FORCED;
 
 const format = std.fmt.format;
 pub fn init(allocator: Allocator, v: Argv) !void {
@@ -65,12 +67,14 @@ pub fn template(a: Allocator, v: Argv) !void {
     const name_arg = v.param("--name") orelse "unnamed_template";
     const files_arg = v.param("--files") orelse "";
     templates_dir.makeDir(name_arg) catch |err| {
-        if (!v.keyword("-F")) return err;
+        if (!v.keyword(KW_FORCED)) return err;
     };
     var dir = try templates_dir.openDir(name_arg, .{});
     defer dir.close();
     var files_it = std.mem.split(u8, files_arg, ",");
     while (files_it.next()) |file| try cwd.copyFile(file, dir, file, .{});
+    var out_buffer: [100]u8 = undefined;
+    try stdout().writer().print("template written to {s}", .{try dir.realpath("", &out_buffer)});
 }
 pub fn generate(a: Allocator, v: Argv) !void {
     const parsed = try common.get_config(a);
@@ -95,51 +99,23 @@ pub fn generate(a: Allocator, v: Argv) !void {
     const dll_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=", conf.defaults.lib_dir });
     defer a.free(dll_dir);
     try cmd.append(dll_dir);
-    const rslt = try process.Child.run(.{ .allocator = a, .argv = cmd.items });
-    defer {
-        a.free(rslt.stdout);
-        a.free(rslt.stderr);
-    }
-    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
-    if (rslt.stderr.len > 0) {
-        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
-    }
+    try common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE));
 }
-pub fn build(a: Allocator, _: Argv) !void {
+pub fn build(a: Allocator, v: Argv) !void {
+    try generate(a, v);
     const parsed = try common.get_config(a);
     defer parsed.deinit();
     const conf = parsed.value;
-    const rslt = try process.Child.run(.{
-        .allocator = a,
-        .argv = &[_][]const u8{ "cmake", "--build", conf.defaults.build_dir },
-    });
-    defer {
-        a.free(rslt.stderr);
-        a.free(rslt.stdout);
-    }
-    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
-    if (rslt.stderr.len > 0) {
-        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
-    }
+    try common.execute_command_slice(a, &[_][]const u8{ "cmake", "--build", conf.defaults.build_dir }, v.keyword(KW_VERBOSE));
 }
-pub fn run(a: Allocator) !void {
+pub fn run(a: Allocator, v: Argv) !void {
+    try build(a, v);
     const parsed = try common.get_config(a);
     defer parsed.deinit();
     const conf = parsed.value;
     const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.defaults.build_dir, "/", conf.defaults.bin_dir, "/", conf.defaults.project });
     defer a.free(cmd);
-    const rslt = try process.Child.run(.{
-        .allocator = a,
-        .argv = &[_][]const u8{cmd},
-    });
-    defer {
-        a.free(rslt.stderr);
-        a.free(rslt.stdout);
-    }
-    try std.io.getStdOut().writer().print("{s}\n", .{rslt.stdout});
-    if (rslt.stderr.len > 0) {
-        try std.io.getStdErr().writer().print("{s}\n", .{rslt.stderr});
-    }
+    try common.execute_command_str(a, cmd, true);
 }
 
 pub fn project(a: Allocator, v: Argv) !void {

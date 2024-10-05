@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Dir = std.fs.Dir;
+const process = std.process;
+const mem = std.mem;
+pub const KW_FORCED = "-FORCED";
+pub const KW_VERBOSE = "-VERBOSE";
 pub const DEFAULT_ALLOCATOR = std.heap.page_allocator;
 pub const APP_NAME: []const u8 = "cmakepls";
 pub const CONFIG_FILE_NAME = "config.json";
@@ -117,4 +121,25 @@ pub fn get_template_dir(a: Allocator, name: cstring) !Dir {
     var templates_dir = try appdata_dir.openDir("templates", .{});
     defer templates_dir.close();
     return try templates_dir.openDir(name, .{ .iterate = true });
+}
+pub fn execute_command_slice(allocator: Allocator, cmd: []const []const u8, verbose: bool) !void {
+    const rslt = try process.Child.run(.{
+        .allocator = allocator,
+        .argv = cmd,
+    });
+    defer {
+        allocator.free(rslt.stderr);
+        allocator.free(rslt.stdout);
+    }
+    if (verbose) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.print("{s}", .{rslt.stdout});
+    }
+    if (rslt.stderr.len > 0) {
+        const stderr = std.io.getStdErr().writer();
+        try stderr.print("{s}", .{rslt.stderr});
+    }
+}
+pub fn execute_command_str(allocator: Allocator, cmd: []const u8, verbose: bool) !void {
+    try execute_command_slice(allocator, &[_][]const u8{cmd}, verbose);
 }

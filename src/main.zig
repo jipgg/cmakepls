@@ -12,5 +12,5 @@ pub fn main() !void {
     if (v.keyword("project")) return try commands.project(DEFAULT_ALLOCATOR, v);
     if (v.keyword("generate")) return try commands.generate(DEFAULT_ALLOCATOR, v);
     if (v.keyword("build")) return try commands.build(DEFAULT_ALLOCATOR, v);
-    if (v.keyword("run")) return try commands.run(DEFAULT_ALLOCATOR);
+    if (v.keyword("run")) return try commands.run(DEFAULT_ALLOCATOR, v);
 }
