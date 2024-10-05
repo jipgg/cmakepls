@@ -85,6 +85,7 @@ pub fn template(a: Allocator, v: Argv) !void {
     var out_buffer: [100]u8 = undefined;
     try stdout().writer().print("template written to {s}", .{try dir.realpath("", &out_buffer)});
 }
+// this function changes the working directory to localappdata apparently, got to figure out why
 pub fn generate(a: Allocator, v: Argv) !void {
     const parsed = try common.get_config(a);
     defer parsed.deinit();
@@ -114,7 +115,6 @@ pub fn generate(a: Allocator, v: Argv) !void {
     }
 }
 pub fn build(a: Allocator, v: Argv) !void {
-    try generate(a, v);
     const parsed = try common.get_config(a);
     defer parsed.deinit();
     const conf = parsed.value;
@@ -127,7 +127,7 @@ pub fn run(a: Allocator, v: Argv) !void {
     const conf = parsed.value;
     const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.defaults.build_dir, "/", conf.defaults.bin_dir, "/", conf.defaults.project });
     defer a.free(cmd);
-    try common.execute_command_str(a, cmd, true);
+    try common.execute_command_slice(a, &[_][]const u8{cmd}, true);
 }
 
 pub fn project(a: Allocator, v: Argv) !void {
