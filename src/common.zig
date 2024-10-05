@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Dir = std.fs.Dir;
 const process = std.process;
 const mem = std.mem;
+pub const CACHE_DIR = ".cmakepls_cache";
 pub const KW_FORCED = "-FORCED";
 pub const KW_VERBOSE = "-VERBOSE";
 pub const DEFAULT_ALLOCATOR = std.heap.page_allocator;
@@ -28,6 +29,7 @@ pub const ConfigFile = struct {
         bin_dir: cstring,
         lib_dir: cstring,
     },
+    place_compile_commands_in_cwd: bool,
 };
 pub const DEFAULT_CONFIG = ConfigFile{
     .toolchain = "null",
@@ -42,6 +44,7 @@ pub const DEFAULT_CONFIG = ConfigFile{
         .bin_dir = "bin",
         .lib_dir = "lib",
     },
+    .place_compile_commands_in_cwd = true,
 };
 pub const Argv = struct {
     allocator: Allocator,
@@ -142,4 +145,15 @@ pub fn execute_command_slice(allocator: Allocator, cmd: []const []const u8, verb
 }
 pub fn execute_command_str(allocator: Allocator, cmd: []const u8, verbose: bool) !void {
     try execute_command_slice(allocator, &[_][]const u8{cmd}, verbose);
+}
+pub fn delete_dir_contents(dir: Dir) !void {
+    var it = dir.iterate();
+    while (try it.next()) |v| {
+        if (v.kind == .directory) {
+            var child_dir = try dir.openDir(v.name, .{ .iterate = true });
+            try delete_dir_contents(child_dir);
+            child_dir.close();
+        }
+        try dir.deleteTree(v.name);
+    }
 }

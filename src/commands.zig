@@ -13,6 +13,7 @@ const czstring = [:0]const u8;
 const stdout = std.io.getStdOut;
 const KW_VERBOSE = common.KW_VERBOSE;
 const KW_FORCED = common.KW_FORCED;
+const CACHE_DIR = common.CACHE_DIR;
 
 const format = std.fmt.format;
 pub fn init(allocator: Allocator, v: Argv) !void {
@@ -100,6 +101,9 @@ pub fn generate(a: Allocator, v: Argv) !void {
     defer a.free(dll_dir);
     try cmd.append(dll_dir);
     try common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE));
+    if (conf.place_compile_commands_in_cwd) {
+        try place_compile_commands_in_cwd(a, conf.defaults.build_dir, true);
+    }
 }
 pub fn build(a: Allocator, v: Argv) !void {
     try generate(a, v);
@@ -146,7 +150,7 @@ pub fn project(a: Allocator, v: Argv) !void {
                 var line_it = mem.split(u8, line, "@");
                 while (line_it.next()) |str| {
                     if (mem.count(u8, str, "!") > 0) {
-                        try process_str(file_writer, str, conf);
+                        try process_line_substr(file_writer, str, conf);
                         continue;
                     }
                     try file_writer.print("{s}", .{str});
@@ -156,7 +160,8 @@ pub fn project(a: Allocator, v: Argv) !void {
         }
     }
 }
-inline fn process_str(writer: anytype, str: []const u8, conf: common.ConfigFile) !void {
+//helpers
+inline fn process_line_substr(writer: anytype, str: []const u8, conf: common.ConfigFile) !void {
     const def = conf.defaults;
     if (mem.eql(u8, str, "!cmake_minimum_required")) {
         try writer.print("{s}", .{def.cmake_minimum_required});
@@ -187,4 +192,30 @@ inline fn process_str(writer: anytype, str: []const u8, conf: common.ConfigFile)
         return;
     }
     std.debug.print("invalid keyword {s}\n", .{str});
+}
+fn create_cache_and_generate(allocator: Allocator, cwd: Dir) !Dir {
+    const cmd = &[_][]const u8{ "cmake", "-G", "Ninja", "-B", CACHE_DIR, "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON" };
+    try common.execute_command_slice(allocator, cmd, false);
+    return try cwd.openDir(CACHE_DIR, .{ .iterate = true });
+}
+fn place_compile_commands_in_cwd(allocator: Allocator, build_dir_str: []const u8, delete_cache_always: bool) !void {
+    const compile_commands = "compile_commands.json";
+    var cwd = std.fs.cwd();
+    defer cwd.close();
+    var build_dir: ?Dir = cwd.openDir(build_dir_str, .{}) catch null;
+    if (build_dir) |bd| {
+        const file: ?File = bd.openFile(compile_commands, .{}) catch null;
+        if (file) |f| {
+            f.close();
+        } else {
+            build_dir = null;
+        }
+    }
+    var dir: Dir = build_dir orelse try create_cache_and_generate(allocator, cwd);
+    try dir.copyFile(compile_commands, cwd, compile_commands, .{});
+    if (build_dir == null and delete_cache_always) {
+        try common.delete_dir_contents(dir);
+        dir.close();
+        try cwd.deleteDir(CACHE_DIR);
+    } else dir.close();
 }
