@@ -15,35 +15,15 @@ const stdout = std.io.getStdOut;
 const KW_VERBOSE = common.KW_VERBOSE;
 const KW_FORCED = common.KW_FORCED;
 const CACHE_DIR = common.CACHE_DIR;
+const CommandError = error{
+    invalid_template_argument,
+};
 
-// const format = std.fmt.format;
-// pub fn init(allocator: Allocator, v: Argv) !void {
-//     const parsed_conf = try common.get_config(allocator);
-//     defer parsed_conf.deinit();
-//     const conf = parsed_conf.value;
-//     const def = conf.defaults;
-//     var dir = std.fs.cwd();
-//     defer dir.close();
-//     const cmakelists = try dir.createFile("CMakeLists.txt", .{});
-//     var out = cmakelists.writer();
-//     const min_req_fmt = "cmake_minimum_required(VERSION {s})\n";
-//     try format(out, min_req_fmt, .{v.param("--version") orelse def.cmake_minimum_required});
-//     try format(out, "set(CMAKE_CXX_STANDARD {s})\n", .{v.param("--std") orelse def.cxx_standard});
-//     try format(out, "set(CMAKE_CXX_STANDARD_REQUIRED {s})\n", .{v.param("--std_required") orelse def.cxx_standard_required});
-//     const project_name = v.param("--name") orelse def.project;
-//     try format(out, "project({s})\n", .{project_name});
-//     try format(out, "file(GLOB SOURCE_DIR ${{CMAKE_SOURCE_DIR}}/{s}/*.cpp)\n", .{v.param("--source") orelse def.source_dir});
-//     try format(out, "add_executable({s} {s}${{SOURCE_DIR}})\n", .{ project_name, if (v.keyword("-WIN32")) "WIN32 " else "" });
-//     cmakelists.close();
-//     const cmakepresets = try dir.createFile("CMakePresets.json", .{});
-//     out = cmakepresets.writer();
-//     cmakepresets.close();
-// }
 pub fn version() !void {
     try stdout().writer().print("version: {d}.{d}.{d}", .{ common.VERSION_MAJOR, common.VERSION_MINOR, common.VERSION_PATCH });
 }
-pub fn global(a: Allocator, v: Argv) !void {
-    const parsed_config = common.read_config(a) catch try common.present_default_config(a);
+pub fn global(a: Allocator, v: Argv, workspace: Dir) !void {
+    const parsed_config = try common.get_config(a, workspace);
     defer parsed_config.deinit();
     var conf = parsed_config.value;
     if (v.param("--toolchain")) |val| conf.toolchain = val;
@@ -52,42 +32,46 @@ pub fn global(a: Allocator, v: Argv) !void {
     if (v.param("--defaults-cxx_standard_required")) |val| conf.defaults.cxx_standard_required = val;
     if (v.param("--defaults-build_dir")) |val| conf.defaults.build_dir = val;
     if (v.param("--defaults-export_compile_commands")) |val| conf.defaults.export_compile_commands = val;
-    try common.write_config(a, conf);
+    try common.write_global_config(a, conf);
 }
-pub fn template(a: Allocator, v: Argv) !void {
+pub fn template(a: Allocator, v: Argv, workspace: Dir) !void {
     var appdata = common.open_appdata_dir(a) catch try common.make_appdata_dir(a);
     defer appdata.close();
     var templates_dir: Dir = undefined;
     defer templates_dir.close();
-    const opened_templates_dir: ?Dir = appdata.openDir("templates", .{}) catch null;
+    const opened_templates_dir: ?Dir = appdata.openDir("templates", .{ .no_follow = true }) catch null;
     if (opened_templates_dir == null) {
         try appdata.makeDir("templates");
-        templates_dir = try appdata.openDir("templates", .{});
+        templates_dir = try appdata.openDir("templates", .{ .no_follow = true });
     } else templates_dir = opened_templates_dir.?;
-    var cwd = std.fs.cwd();
-    defer cwd.close();
     const name_arg = v.param("--name") orelse "unnamed_template";
     const files_arg = v.param("--files") orelse "";
     templates_dir.makeDir(name_arg) catch |err| {
         if (!v.keyword(KW_FORCED)) return err;
     };
-    var dir = try templates_dir.openDir(name_arg, .{});
+    var dir = try templates_dir.openDir(name_arg, .{ .no_follow = true });
     defer dir.close();
     var files_it = std.mem.split(u8, files_arg, ",");
     while (files_it.next()) |entry| {
         if (entry[entry.len - 1] == '/') {
             try dir.makeDir(entry);
-            try common.copy_dir_recursively(try cwd.openDir(entry, .{ .iterate = true }), try dir.openDir(entry, .{ .iterate = true }));
+            try common.copy_dir_recursively(try workspace.openDir(entry, .{
+                .iterate = true,
+                .no_follow = true,
+            }), try dir.openDir(entry, .{
+                .iterate = true,
+                .no_follow = true,
+            }));
             continue;
         }
-        try cwd.copyFile(entry, dir, entry, .{});
+        try workspace.copyFile(entry, dir, entry, .{});
     }
     var out_buffer: [100]u8 = undefined;
     try stdout().writer().print("template written to {s}", .{try dir.realpath("", &out_buffer)});
 }
 // this function changes the working directory to localappdata apparently, got to figure out why
-pub fn generate(a: Allocator, v: Argv) !void {
-    const parsed = try common.get_config(a);
+pub fn generate(a: Allocator, v: Argv, workspace: Dir) !void {
+    const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
     const conf = parsed.value;
     var cmd = std.ArrayList([]const u8).init(a);
@@ -110,19 +94,19 @@ pub fn generate(a: Allocator, v: Argv) !void {
     defer a.free(dll_dir);
     try cmd.append(dll_dir);
     try common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE));
-    if (conf.place_compile_commands_in_cwd) {
-        try place_compile_commands_in_cwd(a, conf.defaults.build_dir, true);
+    if (conf.place_compile_commands_in_workspace) {
+        try place_compile_commands_in_workspace(a, workspace, conf.defaults.build_dir, true);
     }
 }
-pub fn build(a: Allocator, v: Argv) !void {
-    const parsed = try common.get_config(a);
+pub fn build(a: Allocator, v: Argv, workspace: Dir) !void {
+    const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
     const conf = parsed.value;
     try common.execute_command_slice(a, &[_][]const u8{ "cmake", "--build", conf.defaults.build_dir }, v.keyword(KW_VERBOSE));
 }
-pub fn run(a: Allocator, v: Argv) !void {
-    try build(a, v);
-    const parsed = try common.get_config(a);
+pub fn run(a: Allocator, v: Argv, workspace: Dir) !void {
+    try build(a, v, workspace);
+    const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
     const conf = parsed.value;
     const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.defaults.build_dir, "/", conf.defaults.bin_dir, "/", conf.defaults.project });
@@ -130,19 +114,20 @@ pub fn run(a: Allocator, v: Argv) !void {
     try common.execute_command_slice(a, &[_][]const u8{cmd}, true);
 }
 
-pub fn project(a: Allocator, v: Argv) !void {
-    if (v.param("--template") orelse v.param("-t")) |t| {
-        const config = try common.get_config(a);
+pub fn project(a: Allocator, v: Argv, workspace: Dir) !void {
+    if (v.param("-t")) |t| {
+        const config = try common.get_config(a, workspace);
         defer config.deinit();
         const conf = config.value;
         var dir = try common.get_template_dir(a, t);
         defer dir.close();
-        var cwd = std.fs.cwd();
-        defer cwd.close();
         var buf = std.ArrayList(u8).init(a);
         defer buf.deinit();
-        try process_entries(dir, cwd, &buf, conf);
+        try process_entries(dir, workspace, &buf, conf);
+        return;
     }
+    std.debug.print("failed to open", .{});
+    return CommandError.invalid_template_argument;
 }
 //helpers
 fn process_entries(src: Dir, dest: Dir, buf: *std.ArrayList(u8), conf: ConfigFile) !void {
@@ -154,23 +139,23 @@ fn process_entries(src: Dir, dest: Dir, buf: *std.ArrayList(u8), conf: ConfigFil
         }
         if (entry.kind == .directory) {
             try dest.makeDir(entry.name);
-            var dest_subdir = try dest.openDir(entry.name, .{ .iterate = true });
+            var dest_subdir = try dest.openDir(entry.name, .{ .iterate = true, .no_follow = true });
             defer dest_subdir.close();
-            var src_subdir = try src.openDir(entry.name, .{ .iterate = true });
+            var src_subdir = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
             defer src_subdir.close();
             try process_entries(src_subdir, dest_subdir, buf, conf);
             continue;
         }
     }
 }
-inline fn process_file(dir: Dir, entry: Dir.Entry, cwd: Dir, buf: *std.ArrayList(u8), conf: ConfigFile) !void {
-    try dir.copyFile(entry.name, cwd, entry.name, .{});
+inline fn process_file(dir: Dir, entry: Dir.Entry, workspace: Dir, buf: *std.ArrayList(u8), conf: ConfigFile) !void {
+    try dir.copyFile(entry.name, workspace, entry.name, .{});
     try buf.resize(common.MAX_BYTES);
-    var file = try cwd.openFile(entry.name, .{ .mode = .read_write });
+    var file = try workspace.openFile(entry.name, .{ .mode = .read_write });
     try buf.resize(try file.readAll(buf.items));
     file.close();
     //try cwd.deleteFile(entry.name);
-    file = try cwd.createFile(entry.name, .{});
+    file = try workspace.createFile(entry.name, .{});
     defer file.close();
     const file_writer = file.writer();
     var lines = mem.split(u8, buf.items, "\n");
@@ -218,16 +203,14 @@ inline fn process_line_substr(writer: anytype, str: []const u8, conf: ConfigFile
     }
     std.debug.print("invalid keyword {s}\n", .{str});
 }
-fn create_cache_and_generate(allocator: Allocator, cwd: Dir) !Dir {
+fn create_cache_and_generate(allocator: Allocator, workspace: Dir) !Dir {
     const cmd = &[_][]const u8{ "cmake", "-G", "Ninja", "-B", CACHE_DIR, "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON" };
     try common.execute_command_slice(allocator, cmd, false);
-    return try cwd.openDir(CACHE_DIR, .{ .iterate = true });
+    return try workspace.openDir(CACHE_DIR, .{ .iterate = true, .no_follow = true });
 }
-fn place_compile_commands_in_cwd(allocator: Allocator, build_dir_str: []const u8, delete_cache_always: bool) !void {
+fn place_compile_commands_in_workspace(allocator: Allocator, workspace: Dir, build_dir_str: []const u8, delete_cache_always: bool) !void {
     const compile_commands = "compile_commands.json";
-    var cwd = std.fs.cwd();
-    defer cwd.close();
-    var build_dir: ?Dir = cwd.openDir(build_dir_str, .{}) catch null;
+    var build_dir: ?Dir = workspace.openDir(build_dir_str, .{ .no_follow = true }) catch null;
     if (build_dir) |bd| {
         const file: ?File = bd.openFile(compile_commands, .{}) catch null;
         if (file) |f| {
@@ -236,11 +219,11 @@ fn place_compile_commands_in_cwd(allocator: Allocator, build_dir_str: []const u8
             build_dir = null;
         }
     }
-    var dir: Dir = build_dir orelse try create_cache_and_generate(allocator, cwd);
-    try dir.copyFile(compile_commands, cwd, compile_commands, .{});
+    var dir: Dir = build_dir orelse try create_cache_and_generate(allocator, workspace);
+    try dir.copyFile(compile_commands, workspace, compile_commands, .{});
     if (build_dir == null and delete_cache_always) {
         try common.delete_dir_contents(dir);
         dir.close();
-        try cwd.deleteDir(CACHE_DIR);
+        try workspace.deleteDir(CACHE_DIR);
     } else dir.close();
 }
