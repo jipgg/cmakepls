@@ -1,17 +1,12 @@
 const std = @import("std");
-const util = @import("util.zig");
-const process = std.process;
+const utl = @import("utility.zig");
 const mem = std.mem;
 const fs = std.fs;
-const meta = std.meta;
-const Allocator = std.mem.Allocator;
-const Dir = fs.Dir;
-const File = fs.File;
+const json = std.json;
 pub const CACHE_DIR: []const u8 = ".cmakepls_cache";
 pub const LOCAL_DIR: []const u8 = ".cmakepls";
 pub const KW_FORCED: []const u8 = "-FORCED";
 pub const KW_VERBOSE: []const u8 = "-VERBOSE";
-pub const DEFAULT_ALLOCATOR: Allocator = std.heap.page_allocator;
 pub const APP_NAME: []const u8 = "cmakepls";
 pub const CONFIG_FILE_NAME: []const u8 = "config.json";
 pub const GLOBAL_FILE_NAME: []const u8 = "global.json";
@@ -20,8 +15,7 @@ pub const VERSION_MINOR: u32 = 1;
 pub const VERSION_PATCH: u32 = 0;
 pub const TEMPLATE_DIR_NAME: []const u8 = "templates";
 pub const MAX_BYTES: usize = 1024 * 4;
-pub const ParsedConfig = std.json.Parsed(ConfigFile);
-pub const GlobalFile = struct {
+pub const GlobalFile = struct { //wip
     toolchain_file: []const u8,
 };
 pub const ConfigFile = struct {
@@ -47,15 +41,15 @@ pub const DEFAULT_CONFIG: ConfigFile = .{
     .place_compile_commands_in_workspace = "true",
 };
 pub const Argv = struct {
-    allocator: Allocator,
+    allocator: mem.Allocator,
     data: [][:0]u8,
-    pub fn init(allocator: Allocator) !Argv {
+    pub fn init(allocator: mem.Allocator) !Argv {
         return Argv{ .allocator = allocator, .data = try std.process.argsAlloc(allocator) };
     }
     pub fn deinit(self: Argv) void {
         std.process.argsFree(self.allocator, self.data);
     }
-    pub fn keyword(self: Argv, comptime kw: []const u8) bool {
+    pub fn keyword(self: Argv, kw: []const u8) bool {
         for (self.data) |v| {
             if (std.mem.eql(u8, kw, v)) {
                 return true;
@@ -65,7 +59,7 @@ pub const Argv = struct {
     }
     pub fn index_of(self: Argv, element: []const u8) ?usize {
         for (self.data, 0..) |v, i| {
-            if (mem.eql(u8, element, v)) {
+            if (std.mem.eql(u8, element, v)) {
                 return i;
             }
         }
@@ -81,77 +75,90 @@ pub const Argv = struct {
         }
         return null;
     }
+    pub fn param_slice(self: Argv, slice: []const []const u8) ?[]const u8 {
+        for (slice) |keyw| {
+            const arg = self.param(keyw);
+            if (arg) |v| return v;
+        }
+        return null;
+    }
+    pub fn keyword_slice(self: Argv, slice: []const []const u8) bool {
+        for (slice) |keyw| if (self.keyword(keyw)) {
+            return true;
+        };
+        return false;
+    }
 };
 
-pub fn present_default_config(allocator: Allocator) !std.json.Parsed(ConfigFile) {
+pub fn present_default_config(allocator: mem.Allocator) !json.Parsed(ConfigFile) {
     var slice = std.ArrayList(u8).init(allocator);
     defer slice.deinit();
-    try std.json.stringify(DEFAULT_CONFIG, .{ .whitespace = .indent_4 }, slice.writer());
-    return try std.json.parseFromSlice(ConfigFile, allocator, slice.items, .{ .allocate = .alloc_always });
+    try json.stringify(DEFAULT_CONFIG, .{ .whitespace = .indent_4 }, slice.writer());
+    return try json.parseFromSlice(ConfigFile, allocator, slice.items, .{ .allocate = .alloc_always });
 }
-pub fn get_appdata_dir(allocator: Allocator) !std.fs.Dir {
+pub fn get_appdata_dir(allocator: mem.Allocator) !fs.Dir {
     return open_appdata_dir(allocator) catch try make_appdata_dir(allocator);
 }
 
-pub fn open_appdata_dir(allocator: Allocator) !std.fs.Dir {
-    const appdata_str = try std.fs.getAppDataDir(allocator, APP_NAME);
+pub fn open_appdata_dir(allocator: mem.Allocator) !fs.Dir {
+    const appdata_str = try fs.getAppDataDir(allocator, APP_NAME);
     defer allocator.free(appdata_str);
-    return try std.fs.openDirAbsolute(appdata_str, .{ .no_follow = true });
+    return try fs.openDirAbsolute(appdata_str, .{ .no_follow = true });
 }
-pub fn make_appdata_dir(allocator: Allocator) !std.fs.Dir {
-    const appdata_str = try std.fs.getAppDataDir(allocator, APP_NAME);
+pub fn make_appdata_dir(allocator: mem.Allocator) !fs.Dir {
+    const appdata_str = try fs.getAppDataDir(allocator, APP_NAME);
     defer allocator.free(appdata_str);
-    try std.fs.makeDirAbsolute(appdata_str);
+    try fs.makeDirAbsolute(appdata_str);
     return try open_appdata_dir(allocator);
 }
-pub fn open_local_dir(workspace: Dir) Dir.OpenError!Dir {
+pub fn open_local_dir(workspace: fs.Dir) fs.Dir.OpenError!fs.Dir {
     return try workspace.openDir(LOCAL_DIR, .{ .no_follow = true });
 }
-pub fn make_local_dir(workspace: Dir) !Dir {
+pub fn make_local_dir(workspace: fs.Dir) !fs.Dir {
     try workspace.makeDir(LOCAL_DIR);
     return try workspace.openDir(LOCAL_DIR, .{ .no_follow = true });
 }
-pub fn has_local_dir(workspace: Dir) bool {
-    var exists: ?Dir = open_local_dir(workspace) catch null;
+pub fn has_local_dir(workspace: fs.Dir) bool {
+    var exists: ?fs.Dir = open_local_dir(workspace) catch null;
     if (exists) |*v| {
         v.close();
         return true;
     } else return false;
 }
-pub fn get_local_config() !File {
-    const local_dir = try open_local_dir();
-    defer local_dir.close();
-    try local_dir.openFile(CONFIG_FILE_NAME, .{});
-}
 
-pub fn read_config(allocator: Allocator, dir: Dir) !ParsedConfig {
+pub fn read_config(allocator: mem.Allocator, dir: fs.Dir) !json.Parsed(ConfigFile) {
     const file = try dir.openFile(CONFIG_FILE_NAME, .{ .mode = .read_only });
     const buf = try file.readToEndAlloc(allocator, MAX_BYTES);
     defer allocator.free(buf);
-    return try std.json.parseFromSlice(ConfigFile, allocator, buf, .{ .allocate = .alloc_always });
+    return try json.parseFromSlice(ConfigFile, allocator, buf, .{ .allocate = .alloc_always });
 }
 /// user owns the returned data
-pub fn read_global_config(allocator: Allocator) !ParsedConfig {
+pub fn read_global_config(allocator: mem.Allocator) !json.Parsed(ConfigFile) {
     const dir = try open_appdata_dir(allocator);
     const file = try dir.openFile(CONFIG_FILE_NAME, .{ .mode = .read_only });
     const buf = try file.readToEndAlloc(allocator, MAX_BYTES);
     defer allocator.free(buf);
-    return try std.json.parseFromSlice(ConfigFile, allocator, buf, .{ .allocate = .alloc_always });
+    return try json.parseFromSlice(ConfigFile, allocator, buf, .{ .allocate = .alloc_always });
 }
-pub fn write_config(dir: Dir, config: ConfigFile) !void {
+pub fn write_config(dir: fs.Dir, config: ConfigFile) !void {
     const file = try dir.createFile(CONFIG_FILE_NAME, .{});
     defer file.close();
-    try std.json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
+    try json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
 }
-pub fn write_global_config(allocator: Allocator, config: ConfigFile) !void {
+pub fn write_global_config(allocator: mem.Allocator, config: ConfigFile) !void {
     var dir = open_appdata_dir(allocator) catch try make_appdata_dir(allocator);
     defer dir.close();
     const file = try dir.createFile(CONFIG_FILE_NAME, .{});
     defer file.close();
-    try std.json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
+    try json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
 }
-pub fn get_config(allocator: Allocator, workspace: Dir) !ParsedConfig {
-    var parsed: ?ParsedConfig = undefined;
+pub fn write_local_config(workspace: fs.Dir, config_file: ConfigFile) !void {
+    var dir = open_local_dir(workspace) catch try make_local_dir(workspace);
+    defer dir.close();
+    try write_config(dir, config_file);
+}
+pub fn get_config(allocator: mem.Allocator, workspace: fs.Dir) !json.Parsed(ConfigFile) {
+    var parsed: ?json.Parsed(ConfigFile) = undefined;
     if (has_local_dir(workspace)) {
         var local_dir = try open_local_dir(workspace);
         defer local_dir.close();
@@ -163,85 +170,16 @@ pub fn get_config(allocator: Allocator, workspace: Dir) !ParsedConfig {
     try write_global_config(allocator, DEFAULT_CONFIG);
     return try read_global_config(allocator);
 }
-pub fn get_template_dir(a: Allocator, name: []const u8) !Dir {
+pub fn get_template_dir(a: mem.Allocator, name: []const u8) !fs.Dir {
     var appdata_dir = try get_appdata_dir(a);
     defer appdata_dir.close();
     var templates_dir = try appdata_dir.openDir("templates", .{ .no_follow = true });
     defer templates_dir.close();
     return try templates_dir.openDir(name, .{ .iterate = true, .no_follow = true });
 }
-pub fn execute_command_slice(allocator: Allocator, cmd: []const []const u8, verbose: bool) !void {
-    const rslt = try process.Child.run(.{
-        .allocator = allocator,
-        .argv = cmd,
-    });
-    defer {
-        allocator.free(rslt.stderr);
-        allocator.free(rslt.stdout);
-    }
-    if (verbose) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("{s}", .{rslt.stdout});
-    }
-    if (rslt.stderr.len > 0) {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("{s}", .{rslt.stderr});
-        return process.Child.RunError.Unexpected;
-    }
-}
-pub fn execute_command_str(allocator: Allocator, cmd: []const u8, verbose: bool) !void {
-    try execute_command_slice(allocator, &[_][]const u8{cmd}, verbose);
-}
-pub fn delete_dir_contents(dir: Dir) !void {
-    var it = dir.iterate();
-    while (try it.next()) |v| {
-        if (v.kind == .directory) {
-            var child_dir = try dir.openDir(v.name, .{ .iterate = true });
-            try delete_dir_contents(child_dir);
-            child_dir.close();
-        }
-        try dir.deleteTree(v.name);
-    }
-}
-pub fn copy_dir_recursively(src_dir: Dir, dest_dir: Dir) !void {
-    var it = src_dir.iterate();
-    while (try it.next()) |entry| {
-        switch (entry.kind) {
-            .file => {
-                try src_dir.copyFile(entry.name, dest_dir, entry.name, .{});
-                continue;
-            },
-            .directory => {
-                var child_src_dir = try src_dir.openDir(entry.name, .{
-                    .iterate = true,
-                    .no_follow = true,
-                });
-                defer child_src_dir.close();
-                try dest_dir.makeDir(entry.name);
-                var child_dest_dir = try dest_dir.openDir(entry.name, .{
-                    .iterate = true,
-                    .no_follow = true,
-                });
-                defer child_dest_dir.close();
-                try copy_dir_recursively(child_src_dir, child_dest_dir);
-                continue;
-            },
-            .door => {},
-            .unknown => {},
-            .sym_link => {},
-            .whiteout => {},
-            .named_pipe => {},
-            .event_port => {},
-            .block_device => {},
-            .character_device => {},
-            .unix_domain_socket => {},
-        }
-        std.debug.print("Unhandled entry {any}", .{entry});
-    }
-}
 pub fn adjust_config_to_argv(c: *ConfigFile, argv: Argv) bool {
     var changed: bool = false;
-    const field_names = comptime util.field_names(ConfigFile);
+    const field_names = comptime utl.field_names(ConfigFile);
     std.debug.print("doing shit\n", .{});
     inline for (field_names) |name| {
         const keyw: []const u8 = comptime "--" ++ name;
