@@ -14,3 +14,5 @@ Written in zig as a personal challenge and goal while learning the language.
 * low
     * add safeguard for overriding a config.json when it failed to parse
     * help command for argument options
+# ideas
+utilize zig's type reflection for merging an incomplete local project config into the global settings

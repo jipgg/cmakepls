@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
+const util = @import("util.zig");
 const Allocator = std.mem.Allocator;
 const Argv = common.Argv;
 const Dir = std.fs.Dir;
@@ -7,11 +8,6 @@ const File = std.fs.File;
 const ConfigFile = common.ConfigFile;
 const process = std.process;
 const mem = std.mem;
-const string = []u8;
-const cstring = []const u8;
-const zstring = [:0]u8;
-const czstring = [:0]const u8;
-const stdout = std.io.getStdOut;
 const KW_VERBOSE = common.KW_VERBOSE;
 const KW_FORCED = common.KW_FORCED;
 const CACHE_DIR = common.CACHE_DIR;
@@ -20,21 +16,17 @@ const CommandError = error{
 };
 
 pub fn version() !void {
-    try stdout().writer().print("version: {d}.{d}.{d}", .{ common.VERSION_MAJOR, common.VERSION_MINOR, common.VERSION_PATCH });
+    try stdout("version: {d}.{d}.{d}", .{ common.VERSION_MAJOR, common.VERSION_MINOR, common.VERSION_PATCH });
 }
-pub fn global(a: Allocator, v: Argv, workspace: Dir) !void {
+pub fn set_global(a: Allocator, v: Argv, workspace: Dir) !void {
     const parsed_config = try common.get_config(a, workspace);
     defer parsed_config.deinit();
     var conf = parsed_config.value;
-    if (v.param("--toolchain")) |val| conf.toolchain = val;
-    if (v.param("--defaults-project")) |val| conf.defaults.project = val;
-    if (v.param("--defaults-cxx_standard")) |val| conf.defaults.cxx_standard = val;
-    if (v.param("--defaults-cxx_standard_required")) |val| conf.defaults.cxx_standard_required = val;
-    if (v.param("--defaults-build_dir")) |val| conf.defaults.build_dir = val;
-    if (v.param("--defaults-export_compile_commands")) |val| conf.defaults.export_compile_commands = val;
-    try common.write_global_config(a, conf);
+    if (common.adjust_config_to_argv(&conf, v)) {
+        try common.write_global_config(a, conf);
+    }
 }
-pub fn template(a: Allocator, v: Argv, workspace: Dir) !void {
+pub fn init_template(a: Allocator, v: Argv, workspace: Dir) !void {
     var appdata = common.open_appdata_dir(a) catch try common.make_appdata_dir(a);
     defer appdata.close();
     var templates_dir: Dir = undefined;
@@ -67,66 +59,82 @@ pub fn template(a: Allocator, v: Argv, workspace: Dir) !void {
         try workspace.copyFile(entry, dir, entry, .{});
     }
     var out_buffer: [100]u8 = undefined;
-    try stdout().writer().print("template written to {s}", .{try dir.realpath("", &out_buffer)});
+    try stdout("template written to {s}", .{try dir.realpath("", &out_buffer)});
 }
-// this function changes the working directory to localappdata apparently, got to figure out why
 pub fn generate(a: Allocator, v: Argv, workspace: Dir) !void {
+    try stdout("[generating...]\n", .{});
     const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
-    const conf = parsed.value;
+    var conf = parsed.value;
+    if (!common.adjust_config_to_argv(&conf, v)) {
+        try stderr("What the fuck mate.\n", .{});
+    } else {
+        try stderr("Kinda fucked mate.\n", .{});
+    }
     var cmd = std.ArrayList([]const u8).init(a);
     defer cmd.deinit();
     try cmd.append("cmake");
-    if (v.keyword("--toolchain") or !mem.eql(u8, conf.toolchain, "null")) {
-        try cmd.append("--toolchain");
-        try cmd.append(v.param("--toolchain") orelse conf.toolchain);
-    }
+    // if (v.keyword("--toolchain") or !mem.eql(u8, conf.toolchain, "null")) {
+    //     try cmd.append("--toolchain");
+    //     try cmd.append(v.param("--toolchain") orelse conf.toolchain);
+    // }
     try cmd.append("-B");
-    try cmd.append(conf.defaults.build_dir);
+    try cmd.append(conf.build_dir);
     const bin_spec = "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=";
-    const bin_dir = try mem.concat(a, u8, &[_][]const u8{ bin_spec, conf.defaults.bin_dir });
+    const bin_dir = try mem.concat(a, u8, &[_][]const u8{ bin_spec, conf.bin_dir });
     defer a.free(bin_dir);
     try cmd.append(bin_dir);
-    const lib_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=", conf.defaults.lib_dir });
+    const lib_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=", conf.lib_dir });
     defer a.free(lib_dir);
     try cmd.append(lib_dir);
-    const dll_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=", conf.defaults.lib_dir });
+    const dll_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=", conf.lib_dir });
     defer a.free(dll_dir);
     try cmd.append(dll_dir);
     try common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE));
-    if (conf.place_compile_commands_in_workspace) {
-        try place_compile_commands_in_workspace(a, workspace, conf.defaults.build_dir, true);
+    if (mem.eql(u8, conf.place_compile_commands_in_workspace, "true")) {
+        try place_compile_commands_in_workspace(a, workspace, conf.build_dir, true);
     }
+    try stdout("project generated successfully.\n", .{});
 }
 pub fn build(a: Allocator, v: Argv, workspace: Dir) !void {
+    try stdout("[building...]\n", .{});
     const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
     const conf = parsed.value;
-    try common.execute_command_slice(a, &[_][]const u8{ "cmake", "--build", conf.defaults.build_dir }, v.keyword(KW_VERBOSE));
+    try common.execute_command_slice(a, &[_][]const u8{ "cmake", "--build", conf.build_dir }, v.keyword(KW_VERBOSE));
+    try stdout("project built successfully.\n", .{});
 }
 pub fn run(a: Allocator, v: Argv, workspace: Dir) !void {
     try build(a, v, workspace);
+    try stdout("[running...]\n", .{});
     const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
     const conf = parsed.value;
-    const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.defaults.build_dir, "/", conf.defaults.bin_dir, "/", conf.defaults.project });
+    const cmd = try mem.concat(a, u8, &[_][]const u8{ "./", conf.build_dir, "/", conf.bin_dir, "/", conf.project_name });
     defer a.free(cmd);
     try common.execute_command_slice(a, &[_][]const u8{cmd}, true);
 }
 
-pub fn project(a: Allocator, v: Argv, workspace: Dir) !void {
-    if (v.param("-t")) |t| {
-        const config = try common.get_config(a, workspace);
+pub fn init_project(a: Allocator, v: Argv, workspace: Dir) !void {
+    try stdout("initializing project...\n", .{});
+    if (v.param("project")) |t| {
+        var config = try common.get_config(a, workspace);
         defer config.deinit();
-        const conf = config.value;
+        var conf = config.value;
+        if (!common.adjust_config_to_argv(&conf, v)) {
+            try stderr("What the fuck mate.\n", .{});
+        } else {
+            try stderr("Kinda fucked mate.\n", .{});
+        }
         var dir = try common.get_template_dir(a, t);
         defer dir.close();
         var buf = std.ArrayList(u8).init(a);
         defer buf.deinit();
         try process_entries(dir, workspace, &buf, conf);
+        try stdout("project initialized successfully.\n", .{});
         return;
     }
-    std.debug.print("failed to open", .{});
+    try stderr("failed to open", .{});
     return CommandError.invalid_template_argument;
 }
 //helpers
@@ -171,37 +179,15 @@ inline fn process_file(dir: Dir, entry: Dir.Entry, workspace: Dir, buf: *std.Arr
         try file_writer.print("\n", .{});
     }
 }
-inline fn process_line_substr(writer: anytype, str: []const u8, conf: ConfigFile) !void {
-    const def = conf.defaults;
-    if (mem.eql(u8, str, "!cmake_minimum_required")) {
-        try writer.print("{s}", .{def.cmake_minimum_required});
-        return;
+inline fn process_line_substr(writer: anytype, str: []const u8, c: ConfigFile) !void {
+    const v = str[1..str.len];
+    const field_names = comptime util.field_names(ConfigFile);
+    inline for (field_names) |name| {
+        if (mem.eql(u8, v, name)) {
+            try writer.print("{s}", .{@field(c, name)});
+            std.debug.print("{s}\n", .{@field(c, name)});
+        }
     }
-    if (mem.eql(u8, str, "!project")) {
-        try writer.print("{s}", .{def.project});
-        return;
-    }
-    if (mem.eql(u8, str, "!cxx_standard")) {
-        try writer.print("{s}", .{def.cxx_standard});
-        return;
-    }
-    if (mem.eql(u8, str, "!cxx_standard_required")) {
-        try writer.print("{s}", .{def.cxx_standard_required});
-        return;
-    }
-    if (mem.eql(u8, str, "!source_dir")) {
-        try writer.print("{s}", .{def.source_dir});
-        return;
-    }
-    if (mem.eql(u8, str, "!export_compile_commands")) {
-        try writer.print("{s}", .{def.export_compile_commands});
-        return;
-    }
-    if (mem.eql(u8, str, "!build_dir")) {
-        try writer.print("{s}", .{def.build_dir});
-        return;
-    }
-    std.debug.print("invalid keyword {s}\n", .{str});
 }
 fn create_cache_and_generate(allocator: Allocator, workspace: Dir) !Dir {
     const cmd = &[_][]const u8{ "cmake", "-G", "Ninja", "-B", CACHE_DIR, "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON" };
@@ -226,4 +212,10 @@ fn place_compile_commands_in_workspace(allocator: Allocator, workspace: Dir, bui
         dir.close();
         try workspace.deleteDir(CACHE_DIR);
     } else dir.close();
+}
+inline fn stdout(comptime format: []const u8, args: anytype) !void {
+    try std.io.getStdOut().writer().print(comptime format, args);
+}
+inline fn stderr(comptime format: []const u8, args: anytype) !void {
+    try std.io.getStdErr().writer().print(comptime format, args);
 }

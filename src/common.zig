@@ -1,7 +1,9 @@
 const std = @import("std");
+const util = @import("util.zig");
 const process = std.process;
 const mem = std.mem;
 const fs = std.fs;
+const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const Dir = fs.Dir;
 const File = fs.File;
@@ -12,42 +14,37 @@ pub const KW_VERBOSE: []const u8 = "-VERBOSE";
 pub const DEFAULT_ALLOCATOR: Allocator = std.heap.page_allocator;
 pub const APP_NAME: []const u8 = "cmakepls";
 pub const CONFIG_FILE_NAME: []const u8 = "config.json";
+pub const GLOBAL_FILE_NAME: []const u8 = "global.json";
 pub const VERSION_MAJOR: u32 = 0;
-pub const VERSION_MINOR: u32 = 0;
-pub const VERSION_PATCH: u32 = 1;
+pub const VERSION_MINOR: u32 = 1;
+pub const VERSION_PATCH: u32 = 0;
 pub const TEMPLATE_DIR_NAME: []const u8 = "templates";
 pub const MAX_BYTES: usize = 1024 * 4;
 pub const ParsedConfig = std.json.Parsed(ConfigFile);
-pub const cstring = []const u8;
+pub const GlobalFile = struct {
+    toolchain_file: []const u8,
+};
 pub const ConfigFile = struct {
-    toolchain: []const u8,
-    defaults: struct {
-        cxx_standard: cstring,
-        cmake_minimum_required: cstring,
-        export_compile_commands: cstring,
-        cxx_standard_required: cstring,
-        project: cstring,
-        build_dir: cstring,
-        source_dir: cstring,
-        bin_dir: cstring,
-        lib_dir: cstring,
-    },
-    place_compile_commands_in_workspace: bool,
+    cxx_standard: []const u8,
+    cmake_minimum_required: []const u8,
+    cxx_standard_required: []const u8,
+    project_name: []const u8,
+    build_dir: []const u8,
+    source_dir: []const u8,
+    bin_dir: []const u8,
+    lib_dir: []const u8,
+    place_compile_commands_in_workspace: []const u8,
 };
 pub const DEFAULT_CONFIG: ConfigFile = .{
-    .toolchain = "null",
-    .defaults = .{
-        .project = "proj",
-        .cmake_minimum_required = "3.22.2",
-        .build_dir = "cmake-out",
-        .cxx_standard = "17",
-        .cxx_standard_required = "ON",
-        .export_compile_commands = "ON",
-        .source_dir = "src",
-        .bin_dir = "bin",
-        .lib_dir = "lib",
-    },
-    .place_compile_commands_in_workspace = true,
+    .project_name = "unnamed",
+    .cmake_minimum_required = "3.22.2",
+    .build_dir = "cmake-out",
+    .cxx_standard = "17",
+    .cxx_standard_required = "ON",
+    .source_dir = "src",
+    .bin_dir = "bin",
+    .lib_dir = "lib",
+    .place_compile_commands_in_workspace = "true",
 };
 pub const Argv = struct {
     allocator: Allocator,
@@ -65,6 +62,14 @@ pub const Argv = struct {
             }
         }
         return false;
+    }
+    pub fn index_of(self: Argv, element: []const u8) ?usize {
+        for (self.data, 0..) |v, i| {
+            if (mem.eql(u8, element, v)) {
+                return i;
+            }
+        }
+        return null;
     }
     pub fn param(self: Argv, kw: []const u8) ?[]const u8 {
         for (self.data, 0..) |v, i| {
@@ -153,7 +158,7 @@ pub fn get_config(allocator: Allocator, workspace: Dir) !ParsedConfig {
     try write_global_config(allocator, DEFAULT_CONFIG);
     return try read_global_config(allocator);
 }
-pub fn get_template_dir(a: Allocator, name: cstring) !Dir {
+pub fn get_template_dir(a: Allocator, name: []const u8) !Dir {
     var appdata_dir = try get_appdata_dir(a);
     defer appdata_dir.close();
     var templates_dir = try appdata_dir.openDir("templates", .{ .no_follow = true });
@@ -227,4 +232,20 @@ pub fn copy_dir_recursively(src_dir: Dir, dest_dir: Dir) !void {
         }
         std.debug.print("Unhandled entry {any}", .{entry});
     }
+}
+pub fn adjust_config_to_argv(c: *ConfigFile, argv: Argv) bool {
+    var changed: bool = false;
+    const field_names = comptime util.field_names(ConfigFile);
+    std.debug.print("doing shit\n", .{});
+    inline for (field_names) |name| {
+        if (argv.keyword(name)) {
+            if (argv.param(name)) |v| {
+                std.debug.print("v {s} | {s}\n", .{ v, @field(c, name) });
+                @field(c, name) = v;
+                std.debug.print("v {s} | {s}\n", .{ v, @field(c, name) });
+                changed = true;
+            }
+        }
+    }
+    return changed;
 }
