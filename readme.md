@@ -7,6 +7,7 @@ Written in zig as a personal challenge and goal while learning the language.
     * allow for overriding config arguments in the cli commands
     * present feedback when processing a command
     * relative config file
+    * `globals.json` for user speific information like toolchain file specifications etc.
 * medium priority
     * streamline command convention
     * store templates as a compressed file
