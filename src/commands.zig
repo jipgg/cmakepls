@@ -65,12 +65,7 @@ pub fn generate(a: Allocator, v: Argv, workspace: Dir) !void {
     try stdout("[generating...]\n", .{});
     const parsed = try common.get_config(a, workspace);
     defer parsed.deinit();
-    var conf = parsed.value;
-    if (!common.adjust_config_to_argv(&conf, v)) {
-        try stderr("What the fuck mate.\n", .{});
-    } else {
-        try stderr("Kinda fucked mate.\n", .{});
-    }
+    const conf = parsed.value;
     var cmd = std.ArrayList([]const u8).init(a);
     defer cmd.deinit();
     try cmd.append("cmake");
@@ -90,7 +85,7 @@ pub fn generate(a: Allocator, v: Argv, workspace: Dir) !void {
     const dll_dir = try mem.concat(a, u8, &[_][]const u8{ "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=", conf.lib_dir });
     defer a.free(dll_dir);
     try cmd.append(dll_dir);
-    try common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE));
+    common.execute_command_slice(a, cmd.items, v.keyword(KW_VERBOSE)) catch return;
     if (mem.eql(u8, conf.place_compile_commands_in_workspace, "true")) {
         try place_compile_commands_in_workspace(a, workspace, conf.build_dir, true);
     }

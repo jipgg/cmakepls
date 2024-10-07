@@ -186,6 +186,7 @@ pub fn execute_command_slice(allocator: Allocator, cmd: []const []const u8, verb
     if (rslt.stderr.len > 0) {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("{s}", .{rslt.stderr});
+        return process.Child.RunError.Unexpected;
     }
 }
 pub fn execute_command_str(allocator: Allocator, cmd: []const u8, verbose: bool) !void {
