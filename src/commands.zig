@@ -121,17 +121,14 @@ pub fn init_project(a: Allocator, v: Argv, workspace: Dir) !void {
         var config = try common.get_config(a, workspace);
         defer config.deinit();
         var conf = config.value;
-        if (!common.adjust_config_to_argv(&conf, v)) {
-            try stderr("What the fuck mate.\n", .{});
-        } else {
-            try stderr("Kinda fucked mate.\n", .{});
-        }
+        const changed = common.adjust_config_to_argv(&conf, v);
         var dir = try common.get_template_dir(a, t);
         defer dir.close();
         var buf = std.ArrayList(u8).init(a);
         defer buf.deinit();
         try process_entries(dir, workspace, &buf, conf);
         try stdout("project initialized successfully.\n", .{});
+        if (changed) try write_local_config(workspace, conf);
         return;
     }
     try stderr("failed to open", .{});
@@ -218,4 +215,9 @@ inline fn stdout(comptime format: []const u8, args: anytype) !void {
 }
 inline fn stderr(comptime format: []const u8, args: anytype) !void {
     try std.io.getStdErr().writer().print(comptime format, args);
+}
+fn write_local_config(workspace: Dir, config_file: ConfigFile) !void {
+    var dir = common.open_local_dir(workspace) catch try common.make_local_dir(workspace);
+    defer dir.close();
+    try common.write_config(dir, config_file);
 }

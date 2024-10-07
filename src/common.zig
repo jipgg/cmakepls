@@ -138,6 +138,11 @@ pub fn read_global_config(allocator: Allocator) !ParsedConfig {
     defer allocator.free(buf);
     return try std.json.parseFromSlice(ConfigFile, allocator, buf, .{ .allocate = .alloc_always });
 }
+pub fn write_config(dir: Dir, config: ConfigFile) !void {
+    const file = try dir.createFile(CONFIG_FILE_NAME, .{});
+    defer file.close();
+    try std.json.stringify(config, .{ .whitespace = .indent_4 }, file.writer());
+}
 pub fn write_global_config(allocator: Allocator, config: ConfigFile) !void {
     var dir = open_appdata_dir(allocator) catch try make_appdata_dir(allocator);
     defer dir.close();
