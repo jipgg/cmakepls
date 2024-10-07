@@ -244,9 +244,11 @@ pub fn adjust_config_to_argv(c: *ConfigFile, argv: Argv) bool {
     const field_names = comptime util.field_names(ConfigFile);
     std.debug.print("doing shit\n", .{});
     inline for (field_names) |name| {
-        if (argv.keyword(name)) {
-            if (argv.param(name)) |v| {
-                std.debug.print("v {s} | {s}\n", .{ v, @field(c, name) });
+        const keyw: []const u8 = comptime "--" ++ name;
+        std.debug.print("keyw: {s}\n", .{keyw});
+        if (argv.keyword(keyw)) {
+            if (argv.param(keyw)) |v| {
+                std.debug.print("{s}:  {s} | {s}\n", .{ keyw, v, @field(c, name) });
                 @field(c, name) = v;
                 std.debug.print("v {s} | {s}\n", .{ v, @field(c, name) });
                 changed = true;
